@@ -2,8 +2,9 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from scipy.stats import linregress, norm
-from datetime import datetime, timezone
+from scipy.stats import t as t_student
+from scipy.optimize import minimize
+from datetime import datetime
 import warnings
 
 # Silenciar advertencias de optimización numérica
@@ -15,7 +16,7 @@ warnings.filterwarnings('ignore')
 st.set_page_config(page_title="The One Ring: Bot 4 GARCH-Montecarlo", layout="wide", page_icon="🔮")
 
 st.title("🔮 Bot 4 — GARCH + Montecarlo Breakout Cones")
-st.caption("Ecosistema Cuantitativo 'The One Ring' | Enfoque: Explosión de Varianza Condicional y Momentum Anómalo")
+st.caption("Ecosistema Cuantitativo 'The One Ring' | Enfoque: Optimización MLE t-Student y Caminatas Aleatorias de Frontera")
 st.markdown("---")
 
 # RESTRICCIONES DE CONTROL INSTITUCIONAL
@@ -36,63 +37,72 @@ umbral_expansion_vol = st.sidebar.slider("Umbral de Expansión de Volatilidad R�
 # 2. UNIVERSO TOTAL DE HIPER-VOLATILIDAD SINCRO (150 TICKERS)
 # ==========================================================================
 UNIVERSO_MOM_VOL = [
-    # --- FLOTA CRYPTO, PROXIES & MINERS (Tu inyección extra de Alfa) ---
     "IBIT", "ETHA", "MSTR", "GLXY", "COIN", "BMNR", "BTBT", "HUT", "CIFR", "WULF", "SOL", "MARA", "RIOT", "CLSK", "SOFI", "NU", "SQ", "PYPL", "MELI", "DLO",
-    # --- COMPUTACIÓN CUÁNTICA & DEEP TECH ---
-    "IONQ", "RGTI", "QBTS", "HON",
-    # --- ROBÓTICA AVANZADA & AUTOMATIZACIÓN ---
-    "SYM", "PATH", "ISRG", "TER",
-    # --- ESPACIO AVANZADO & INFRAESTRUCTURA ASIMÉTRICA ---
-    "RKLB", "AVAV", "ASTS", "KTOS",
-    # --- ENERGÍA DE FRONTERA & URANIO ---
-    "OKLO", "SMR", "BWXT", "CCJ", "LEU", "NXE", "UUUU", "GEV", "VST", "CEG", "XOM", "CVX", "TPL", "NFE", "OKE", "ET", "FANG",
-    # --- SEMICONDUCTORES DE ALTA BETA ---
-    "NVDA", "AMD", "AVGO", "ARM", "TSM", "ASML", "MU", "AMAT", "LRCX", "KLAC", "QCOM", "ADI", "NXPI", "TXN", "ON", "MPWR",
-    # --- CIBERSEGURIDAD & SOFTWARE SAAS EXPLOSIVO ---
-    "CRWD", "PANW", "FTNT", "ZS", "DDOG", "NET", "SNOW", "NOW", "TEAM", "WDAY", "SHOP", "MDB", "TTD", "OKTA", "S",
-    # --- BIOTECH GROWTH ---
-    "VKTX", "HIMS", "CRSP", "MRNA", "AMGN", "REGN", "VRTX", "LLY", "NVO", "GILD", "PFE",
-    # --- COMPLEMENTARIAS DE ACCIÓN PARABÓLICA ---
-    "TSLA", "CELH", "NFLX", "BABA", "PDD", "JD", "BIDU", "NIO", "LI", "FUTU", "DKNG", "RBLX", "AFRM", "UPST", "U", "TWLO",
-    "LMT", "RTX", "GD", "NOC", "TDG", "AAPL", "MSFT", "GOOGL", "COST", "WMT", "JPM", "V", "MA", "MCO", "SPGI", "ADP", "BAC", "MS", "GS", "BLK"
+    "IONQ", "RGTI", "QBTS", "HON", "SYM", "PATH", "ISRG", "TER", "RKLB", "AVAV", "ASTS", "KTOS", "OKLO", "SMR", "BWXT", "CCJ", "LEU", "NXE", "UUUU", "GEV", 
+    "VST", "CEG", "XOM", "CVX", "TPL", "NFE", "OKE", "ET", "FANG", "NVDA", "AMD", "AVGO", "ARM", "TSM", "ASML", "MU", "AMAT", "LRCX", "KLAC", "QCOM", 
+    "ADI", "NXPI", "TXN", "ON", "MPWR", "CRWD", "PANW", "FTNT", "ZS", "DDOG", "NET", "SNOW", "NOW", "TEAM", "WDAY", "SHOP", "MDB", "TTD", "OKTA", "S",
+    "VKTX", "HIMS", "CRSP", "MRNA", "AMGN", "REGN", "VRTX", "LLY", "NVO", "GILD", "PFE", "TSLA", "CELH", "NFLX", "BABA", "PDD", "JD", "BIDU", "NIO", "LI", 
+    "FUTU", "DKNG", "RBLX", "AFRM", "UPST", "U", "TWLO", "LMT", "RTX", "GD", "NOC", "TDG", "AAPL", "MSFT", "GOOGL", "COST", "WMT", "JPM", "V", "MA", 
+    "MCO", "SPGI", "ADP", "BAC", "MS", "GS", "BLK"
 ]
 TICKERS = list(set(UNIVERSO_MOM_VOL))
 
 # ==========================================================================
-# 3. MOTOR MATEMÁTICO: FILTRO DE DOS PASOS (LIGHTWEIGHT GARCH INTERPRETER)
+# 3. MOTOR MATEMÁTICO AVANZADO: OPTIMIZACIÓN MLE GARCH(1,1) t-STUDENT
 # ==========================================================================
-def estimar_garch_manual(retornos):
-    """
-    Algoritmo ligero vectorizado para estimar un modelo GARCH(1,1) base
-    evitando la pesada carga de convergencia de solvers no lineales en Streamlit Cloud.
-    """
+def loss_garch_t_student(parametros, retornos, df_t):
+    """Función de Máxima Verosimilitud Negativa usando la distribución t de Student."""
+    omega, alpha, beta = parametros
     longitud = len(retornos)
     varianzas = np.zeros(longitud)
-    residuos_cuadrados = retornos ** 2
-    
-    # Parámetros institucionales inicializados para persistencia de volatilidad growth
-    omega = 0.05 * np.var(retornos)
-    alpha = 0.10
-    beta = 0.83  # Persistencia de clúster elevada (~0.93 total)
-    
     varianzas[0] = np.var(retornos)
-    for t in range(1, longitud):
-        varianzas[t] = omega + alpha * residuos_cuadrados[t-1] + beta * varianzas[t-1]
+    
+    # Restricción estricta de estacionariedad para evitar colapsos (alpha + beta < 1)
+    if omega <= 0 or alpha < 0 or beta < 0 or (alpha + beta) >= 0.999:
+        return 1e10
         
-    # Proyección de la varianza condicional para el horizonte t+1
-    proxima_vol = np.sqrt(omega + alpha * residuos_cuadrados[-1] + beta * varianzas[-1])
-    return proxima_vol
+    for t in range(1, longitud):
+        varianzas[t] = omega + alpha * (retornos[t-1]**2) + beta * varianzas[t-1]
+    
+    # Evitar divisiones entre cero o varianzas negativas
+    varianzas = np.where(varianzas <= 0, 1e-6, varianzas)
+    
+    # Cálculo de la log-verosimilitud para t de Student
+    residuos_estandarizados = retornos / np.sqrt(varianzas)
+    log_verosimilitud = np.sum(t_student.logpdf(residuos_estandarizados, df=df_t, loc=0, scale=1) - 0.5 * np.log(varianzas))
+    return -log_verosimilitud
+
+def estimar_garch_mle(retornos):
+    """Optimiza numéricamente los parámetros del GARCH(1,1) con colas pesadas."""
+    var_inicial = np.var(retornos)
+    # Valores iniciales lógicos y estables
+    x0 = [0.05 * var_inicial, 0.08, 0.85]
+    bounds = ((1e-8, None), (0.0, 0.3), (0.5, 0.98))
+    
+    # Fijamos los grados de libertad en 5 para capturar de forma robusta las colas de activos Beta-Growth
+    df_t = 5.0 
+    
+    res = minimize(loss_garch_t_student, x0, args=(retornos, df_t), method='SLSQP', bounds=bounds)
+    
+    if res.success:
+        omega, alpha, beta = res.x
+    else:
+        # Respaldo institucional de alta persistencia si el optimizador no logra converger
+        omega, alpha, beta = 0.05 * var_inicial, 0.10, 0.88
+        
+    # Calcular la serie de varianzas para extraer la última proyección condicional h(t+1)
+    varianzas = np.zeros(len(retornos))
+    varianzas[0] = var_inicial
+    for t in range(1, len(retornos)):
+        varianzas[t] = omega + alpha * (retornos[t-1]**2) + beta * varianzas[t-1]
+        
+    proxima_vol = np.sqrt(omega + alpha * (retornos[-1]**2) + beta * varianzas[-1])
+    return proxima_vol, alpha, beta
 
 def ejecutar_montecarlo(precio_inicial, vol_garch, dias, n_sim):
-    """
-    Generación masiva vectorizada de Caminatas Aleatorias bajo Movimiento Browniano
-    Geométrico alimentado por la volatilidad condicional calculada por el GARCH.
-    """
-    dt = 1.0
-    rendimientos_simulados = np.random.normal(0, vol_garch, size=(dias, n_sim))
-    trayectorias = np.zeros_like(rendimientos_simulados)
-    
-    # Vectorización exponencial para proteger la memoria RAM del servidor
+    """Simulación Montecarlo vectorizada basada en la t-Student con grados de libertad ajustados."""
+    # Sincronizamos los rendimientos aleatorios con colas pesadas usando t-Student (df=5)
+    rendimientos_simulados = t_student.rvs(df=5, loc=0, scale=vol_garch, size=(dias, n_sim))
     cambios_porcentuales = np.exp(rendimientos_simulados)
     precios_proyectados = precio_inicial * np.cumprod(cambios_porcentuales, axis=0)
     return precios_proyectados[-1, :]
@@ -106,7 +116,7 @@ def analizar_breakout_estocastico(ticker, umbral_vol, pct_entrada):
         retornos = precios.pct_change().dropna().values
         
         # ------------------------------------------------------------------
-        # PASO 1: FILTRO OPERATIVO RÁPIDO (Desviaciones de Corto vs Medano Plazo)
+        # PASO 1: FILTRO OPERATIVO RÁPIDO (Desviaciones de Corto vs Mediano Plazo)
         # ------------------------------------------------------------------
         vol_corta = np.std(retornos[-5:])
         vol_mediana = np.std(retornos[-20:])
@@ -114,25 +124,24 @@ def analizar_breakout_estocastico(ticker, umbral_vol, pct_entrada):
         if vol_mediana == 0: return None
         expansion_real = (vol_corta - vol_mediana) / vol_mediana
         
-        # Si la varianza condicional corta no se expande por encima del umbral, se descarta instantáneamente
         if expansion_real < umbral_vol:
             return None
             
         # ------------------------------------------------------------------
-        # PASO 2: AJUSTE GARCH(1,1) & SIMULACIÓN MONTECARLO (A los clasificados)
+        # PASO 2: AJUSTE GARCH(1,1) MLE & SIMULACIÓN MONTECARLO
         # ------------------------------------------------------------------
-        vol_condicional_garch = estimar_garch_manual(retornos)
+        vol_condicional_garch, alpha_opt, beta_opt = estimar_garch_mle(retornos)
         precio_spot = float(precios.iloc[-1])
         
-        # Correr las 10,000 proyecciones estocásticas
+        # Correr las 10,000 proyecciones estocásticas con el riesgo ajustado
         precios_finales_simulados = ejecutar_montecarlo(precio_spot, vol_condicional_garch, HORIZONTE_DIAS, N_SIMULACIONES)
         
-        # Extraer los percentiles de la distribución simulada
+        # Extraer los percentiles reales de la simulación
         p_techo_breakout = np.percentile(precios_finales_simulados, pct_entrada * 100)
         p_mediana = np.percentile(precios_finales_simulados, 50)
         p_take_profit = np.percentile(precios_finales_simulados, 90)
         
-        # Evaluar la condición Extra-Región de Momentum Anómalo
+        # Condición Extra-Región: El precio spot rompe el cono de varianza
         condicion_breakout = precio_spot >= p_techo_breakout
         
         return {
@@ -140,6 +149,8 @@ def analizar_breakout_estocastico(ticker, umbral_vol, pct_entrada):
             "Precio Spot": round(precio_spot, 2),
             "Expansión Vol (5D vs 20D)": expansion_real,
             "Vol Condicional GARCH": vol_condicional_garch,
+            "Alpha (ARCH)": alpha_opt,
+            "Beta (GARCH)": beta_opt,
             "Techo Simulación (P75)": round(p_techo_breakout, 2),
             "Objetivo Take Profit (P90)": round(p_take_profit, 2),
             "Soporte Stop Loss (Mediana)": round(p_mediana, 2),
@@ -151,10 +162,9 @@ def analizar_breakout_estocastico(ticker, umbral_vol, pct_entrada):
 # 4. TABLERO DE CONTROL Y PANELES VISUALES DE ISENGARD
 # ==========================================================================
 if st.button("🚀 Iniciar Escaneo de Varianza en Red de Frontera (150 Tickers)"):
-    with st.spinner("Filtrando ruido y calculando matrices distributivas vectorizadas..."):
+    with st.spinner("Ejecutando solvers numéricos MLE y calibrando trayectorias Montecarlo..."):
         alertas = []
         
-        # El procesador pasa como un colador rápido sobre el universo expandido
         for t in TICKERS:
             res = analizar_breakout_estocastico(t, umbral_expansion_vol, percentil_entrada)
             if res: alertas.append(res)
@@ -162,7 +172,6 @@ if st.button("🚀 Iniciar Escaneo de Varianza en Red de Frontera (150 Tickers)"
         if alertas:
             df_res = pd.DataFrame(alertas)
             
-            # --- TABLA CENTRAL 1: ALERTAS DE EXPLOSIÓN ---
             st.subheader("📡 Detección de Regímenes de Momentum Anómalo (Extra-Región)")
             
             breakouts = df_res[df_res["Estatus Matriz"] == "🆕 BREAKOUT DE VARIANZA"].copy()
@@ -178,6 +187,8 @@ if st.button("🚀 Iniciar Escaneo de Varianza en Red de Frontera (150 Tickers)"
                 st.dataframe(df_visual.style.map(style_garch, subset=["Estatus Matriz"]).format({
                     "Expansión Vol (5D vs 20D)": "{:.1%}",
                     "Vol Condicional GARCH": "{:.4f}",
+                    "Alpha (ARCH)": "{:.4f}",
+                    "Beta (GARCH)": "{:.4f}",
                     "Precio Spot": "${:.2f}",
                     "Techo Simulación (P75)": "${:.2f}",
                     "Objetivo Take Profit (P90)": "${:.2f}",
@@ -193,12 +204,10 @@ if st.button("🚀 Iniciar Escaneo de Varianza en Red de Frontera (150 Tickers)"
             n_compras = len(breakouts)
             
             if n_compras > 0:
-                # La ponderación premia el Ratio de Sharpe Estocástico: Expansión de Vol / Riesgo Condicional
                 breakouts['Ratio_Eficiencia'] = breakouts['Expansión Vol (5D vs 20D)'] / breakouts['Vol Condicional GARCH']
                 pesos_base = breakouts['Ratio_Eficiencia'] / breakouts['Ratio_Eficiencia'].sum()
                 breakouts['Monto Invertir (USD)'] = pesos_base * presupuesto_diario_bot4
                 
-                # Algoritmo de optimización distributiva con restricción de piso de $10 USD para los socios
                 if presupuesto_diario_bot4 >= (n_compras * MIN_USD_PER_ORDER):
                     monto_insuficiente = True
                     while monto_insuficiente:
@@ -220,16 +229,17 @@ if st.button("🚀 Iniciar Escaneo de Varianza en Red de Frontera (150 Tickers)"
                 breakouts['Porcentaje Asignación'] = (breakouts['Monto Invertir (USD)'] / presupuesto_diario_bot4) * 100
                 breakouts['Fracciones a Adquirir'] = breakouts['Monto Invertir (USD)'] / breakouts['Precio Spot']
                 
-                st.success(f"🎯 **ORDENANZA DE COMPRA EMITIDA:** Asignación proporcional de los ${presupuesto_diario_bot4:.2f} USD del portafolio entre los quiebres estocásticos confirmados.")
-                st.table(breakouts[['Ticker', 'Estatus Matriz', 'Porcentaje Asignación', 'Monto Invertir (USD)', 'Fracciones a Adquirir', 'Objetivo Take Profit (P90)', 'Soporte Stop Loss (Mediana)']]
+                st.success(f"🎯 **ORDENANZA DE COMPRA EMITIDA:** Asignación de los ${presupuesto_diario_bot4:.2f} USD basada en la calibración GARCH t-Student.")
+                st.table(breakouts[['Ticker', 'Estatus Matriz', 'Alpha (ARCH)', 'Beta (GARCH)', 'Porcentaje Asignación', 'Monto Invertir (USD)', 'Fracciones a Adquirir', 'Objetivo Take Profit (P90)']]
                          .style.format({
                              "Porcentaje Asignación": "{:.1f}%",
                              "Monto Invertir (USD)": "${:.2f}",
                              "Fracciones a Adquirir": "{:.4f}",
-                             "Objetivo Take Profit (P90)": "${:.2f}",
-                             "Soporte Stop Loss (Mediana)": "${:.2f}"
+                             "Alpha (ARCH)": "{:.4f}",
+                             "Beta (GARCH)": "{:.4f}",
+                             "Objetivo Take Profit (P90)": "${:.2f}"
                          }))
             else:
-                st.warning(f"⚠️ **CONGELAMIENTO DE CAPITAL POR RANGO:** El 100% de la flota de hipervolatilidad cotiza comprimida o dentro de los conos normales de la caminata aleatoria. Queda estrictamente prohibido comprar hoy. Los **${presupuesto_diario_bot4:.2f} USD** de hoy permanecen en efectivo líquido en la caja del fondo.")
+                st.warning(f"⚠️ **CONGELAMIENTO DE CAPITAL POR RANGO:** El 100% de la flota de hipervolatilidad cotiza comprimida dentro de los conos normales de la t-Student. Queda prohibido comprar hoy. Los **${presupuesto_diario_bot4:.2f} USD** permanecen en efectivo líquido.")
         else:
-            st.info("Ninguno de los 150 activos de frontera experimentó una expansión de volatilidad de corto plazo suficiente para activar el radar numérico hoy.")
+            st.info("Ninguno de los activos superó el filtro primario de expansión de varianza en la sesión actual.")
